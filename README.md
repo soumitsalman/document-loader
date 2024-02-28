@@ -1,4 +1,4 @@
-# Web Collector
+# Document Loader
 Simple utility for scraping blogs, news articles and sitemaps with more fidelity than some of the default libraries.
 This is a wrapper on top existing libraries such as
 - github.com/go-shiori/go-readability
@@ -8,13 +8,13 @@ This is a wrapper on top existing libraries such as
 
 **Get Package:**
 ```
-go get github.com/soumitsalman/web-collector
+go get github.com/soumitsalman/document-loader
 ```
 
 **Import:**
 ```
 import (
-	"github.com/soumitsalman/web-collector/collectors"
+	"github.com/soumitsalman/document-loader/loaders"
 )
 ```
 
@@ -33,25 +33,31 @@ func main() {
 		"https://blogs.scientificamerican.com/at-scientific-american/reception-on-capitol-hill-will-celebrate-scientific-americans-cities-issue/",
 	}
 
-	collector := collectors.NewDefaultCollector()
+	collector := loaders.NewDefaultLoader()
 	for _, url := range urls {
-		fmt.Println(collector.Collect(url).ToString())
+	 	collector.LoadDocument(url)
+	}
+
+	for _, article := range collector.ListAll() {
+		fmt.Println(article.ToString())
 	}
 }
 ```
 **Scraping From Sitemaps:**
 ```
 func main() {
-    // built-in scrapper for YC's hackernews.com topstories.json
-    site_collector := collectors.NewYCHackerNewsSiteCollector(2)    
-    // built-in sitemap scrapper for thehackersnews.com
-    // site_collector := collectors.NewTheHackersNewsSiteCollector(7)
-    // built-in scrapper for Medium's sitemap
-    // site_collector := collectors.NewMediumSiteCollector(2)
-    // the integer value refers to indicating that the collector will collect posts from the last N number days 
-    for _, article := range site_collector.CollectSite() {
-        fmt.Println(article.ToString())
-    }
+	// built-in sitemap scrapper for thehackersnews.com
+	// collector := loaders.NewTheHackersNewsSiteLoader(7)
+	// built-in scrapper for Medium's sitemap
+	// collector := loaders.NewMediumSiteLoader(2)
+	// built-in scrapper for YC's hackernews.com topstories.json
+	collector := loaders.NewYCHackerNewsSiteLoader(2)
+	// the integer value refers to indicating that the collector will collect posts from the last N number days
+	collector.LoadSite()
+
+	for _, article := range collector.ListAll() {
+		fmt.Println(article.ToString())
+	}
 }
 
 ```

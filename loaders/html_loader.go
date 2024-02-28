@@ -1,4 +1,4 @@
-package collectors
+package loaders
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"github.com/go-shiori/go-readability"
 	"github.com/gocolly/colly/v2"
 	datautils "github.com/soumitsalman/data-utils"
+	doc "github.com/soumitsalman/web-collector/document"
 )
 
 // var (
@@ -22,36 +23,83 @@ import (
 // )
 
 const (
+	USER_AGENT  = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10136"
+	_CACHE_SIZE = 100000
+)
+
+const (
 	THE_HACKERSNEWS_SOURCE = "THE HACKERS NEWS"
 	YC_HACKERNEWS_SOURCE   = "YC HACKER NEWS"
 	MEDIUM_SOURCE          = "MEDIUM"
 )
 
 const (
-	THE_HACKERSNEWS_SITE = "https://feeds.feedburner.com/TheHackersNews"
-	YC_HACKERNEWS_SITE   = "https://hacker-news.firebaseio.com/v0/topstories.json"
-	MEDIUM_SITE          = "https://medium.com/sitemap/sitemap.xml"
+	_THE_HACKERSNEWS_SITE = "https://feeds.feedburner.com/TheHackersNews"
+	_YC_HACKERNEWS_SITE   = "https://hacker-news.firebaseio.com/v0/topstories.json"
+	_MEDIUM_SITE          = "https://medium.com/sitemap/sitemap.xml"
 )
 
-func ToPrettyJsonString(data any) string {
-	val, err := json.MarshalIndent(data, "", "\t")
-	if err != nil {
-		return ""
-	}
-	return string(val)
+////	GENERIC WEB SITE LOADER		////
+
+// loader class for web links and sites
+// the loaded content is cached
+type WebSiteLoader struct {
+	articles map[string]*doc.Document
+	// supportedUrls []string
+	collector   *colly.Collector
+	sitemap_url string
 }
 
-func NewCollector(sitemap_url string) *WebArticleCollector {
-	return &WebArticleCollector{
-		articles:    make(map[string]*WebArticle),
+func (c *WebSiteLoader) inCache(url string) bool {
+	return c.articles[url] != nil
+}
+
+func (c *WebSiteLoader) Get(url string) *doc.Document {
+	article, ok := c.articles[url]
+	// create one if it doesnt exist
+	if !ok {
+		return nil
+	}
+	return article
+}
+
+func (c *WebSiteLoader) ListAll() []*doc.Document {
+	_, articles := datautils.MapToArray[string, *doc.Document](c.articles)
+	return articles
+}
+
+// this function will return an instance of an extracted WebArticle if the url contains an HTML body
+func (c *WebSiteLoader) LoadDocument(url string) *doc.Document {
+	article, ok := c.articles[url]
+	// check the cache
+	if !ok {
+		article = &doc.Document{URL: url}
+		c.articles[url] = article
+		c.collector.Visit(url)
+	}
+	return article
+}
+
+// this function will load all the documents from a sitemap or rss feed
+func (c *WebSiteLoader) LoadSite() []*doc.Document {
+	c.collector.Visit(c.sitemap_url)
+	return c.ListAll()
+}
+
+//// 	DIFFERENT LOADER FACTORIES		////
+
+// internal blank instance
+func newLoader(sitemap_url string) *WebSiteLoader {
+	return &WebSiteLoader{
+		articles:    make(map[string]*doc.Document),
 		collector:   colly.NewCollector(colly.UserAgent(USER_AGENT), colly.CacheDir("./.url-visit-cache")),
 		sitemap_url: sitemap_url,
 	}
 }
 
 // sitemap_url can be "" if the collector is not purposed for any specific sitemap scrapping
-func NewDefaultCollector() *WebArticleCollector {
-	web_collector := NewCollector("")
+func NewDefaultLoader() *WebSiteLoader {
+	web_collector := newLoader("")
 	web_collector.collector.OnResponse(func(r *colly.Response) {
 		if article := readArticleFromResponse(r); article != nil {
 			web_collector.articles[article.URL] = article
@@ -60,16 +108,16 @@ func NewDefaultCollector() *WebArticleCollector {
 	return web_collector
 }
 
-// Collects from https://feeds.feedburner.com/TheHackersNews
-func NewTheHackersNewsSiteCollector(days int) *WebArticleCollector {
-	web_collector := NewCollector(THE_HACKERSNEWS_SITE) // collect all the links' body using another collector
+// Loads articles from https://feeds.feedburner.com/TheHackersNews that have been posted in the last N days
+func NewTheHackersNewsSiteLoader(days int) *WebSiteLoader {
+	web_collector := newLoader(_THE_HACKERSNEWS_SITE) // collect all the links' body using another collector
 
 	// matching entry items in the initial sitemap
 	web_collector.collector.OnXML("//item", func(x *colly.XMLElement) {
 		link := x.ChildText("/link")
 		date, err := time.Parse("Mon, 02 Jan 2006 15:04:05 -0700", x.ChildText("/pubDate"))
-		if err == nil && withinDateRange(date, days) && !web_collector.Exists(link) {
-			web_collector.articles[link] = &WebArticle{
+		if err == nil && withinDateRange(date, days) && !web_collector.inCache(link) {
+			web_collector.articles[link] = &doc.Document{
 				URL:         link,
 				Title:       x.ChildText("/title"),
 				Author:      x.ChildText("/author"),
@@ -83,15 +131,18 @@ func NewTheHackersNewsSiteCollector(days int) *WebArticleCollector {
 	// just match the whole HTML for links that are being visited
 	web_collector.collector.OnHTML("html", func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			article.Body = readBodyFromResponse(h.Response)
+			new_article := readArticleFromResponse(h.Response)
+			article.Body = new_article.Body
+			article.LoadDate = new_article.LoadDate
 		}
 	})
 
 	return web_collector
 }
 
-func NewMediumSiteCollector(days int) *WebArticleCollector {
-	web_collector := NewCollector(MEDIUM_SITE)
+// loades medium posts from https://medium.com/sitemap/sitemap.xml that have been modified in the last N days
+func NewMediumSiteLoader(days int) *WebSiteLoader {
+	web_collector := newLoader(_MEDIUM_SITE)
 
 	date_regex := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`)
 	// this collects the overall site map of https://medium.com/sitemap/sitemap.xml
@@ -110,8 +161,8 @@ func NewMediumSiteCollector(days int) *WebArticleCollector {
 		link := x.ChildText("/loc")
 		date, err := time.Parse("2006-01-02", x.ChildText("/lastmod"))
 
-		if err == nil && withinDateRange(date, days) && !web_collector.Exists(link) {
-			web_collector.articles[link] = &WebArticle{
+		if err == nil && withinDateRange(date, days) && !web_collector.inCache(link) {
+			web_collector.articles[link] = &doc.Document{
 				URL:         link,
 				PublishDate: date.Unix(),
 				Source:      MEDIUM_SOURCE,
@@ -128,18 +179,19 @@ func NewMediumSiteCollector(days int) *WebArticleCollector {
 			new_article := readArticleFromResponse(h.Response)
 			article.Title = new_article.Title
 			article.Body = new_article.Body
+			article.LoadDate = new_article.LoadDate
 		}
 	})
 
 	return web_collector
 }
 
-func NewYCHackerNewsSiteCollector(days int) *WebArticleCollector {
-	// https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty
-	web_collector := NewCollector(YC_HACKERNEWS_SITE)
+// loads story links from https://hacker-news.firebaseio.com/v0/topstories.json posted in the last N days
+func NewYCHackerNewsSiteLoader(days int) *WebSiteLoader {
+	// https://hacker-news.firebaseio.com/v0/topstories.json
+	web_collector := newLoader(_YC_HACKERNEWS_SITE)
 
 	web_collector.collector.OnResponse(func(r *colly.Response) {
-
 		url := r.Request.URL.String()
 		// visiting the topstories https://hacker-news.firebaseio.com/v0/topstories.json
 		if url == web_collector.sitemap_url {
@@ -166,8 +218,8 @@ func NewYCHackerNewsSiteCollector(days int) *WebArticleCollector {
 			if json.Unmarshal(r.Body, &item_data) == nil && // marshalling has to succeed
 				item_data.Type == "story" && // type has to be story
 				item_data.URL != "" && // it has to be legit URL and not a text
-				!web_collector.Exists(item_data.URL) { // item has NOT been explored already
-				web_collector.articles[item_data.URL] = &WebArticle{
+				!web_collector.inCache(item_data.URL) { // item has NOT been explored already
+				web_collector.articles[item_data.URL] = &doc.Document{
 					URL:         item_data.URL,
 					Title:       item_data.Title,
 					Author:      item_data.Author,
@@ -183,28 +235,32 @@ func NewYCHackerNewsSiteCollector(days int) *WebArticleCollector {
 			// it is a link to an actual story that is being visited
 			// ideally all links that get to this should have an entry but links change benignly and this is done to avoid crash
 			if article := web_collector.Get(r.Request.URL.String()); article != nil {
-				article.Body = readBodyFromResponse(r)
+				new_article := readArticleFromResponse(r)
+				article.Body = new_article.Body
+				article.LoadDate = new_article.LoadDate
 			}
 		}
 	})
 	return web_collector
 }
 
+////	INTERNAL UTILITY FUNCTIONS		////
+
 func withinDateRange(date time.Time, range_days int) bool {
 	// 1 is being added to get past some unknown bug
 	return date.AddDate(0, 0, range_days+1).After(time.Now())
 }
 
-func readBodyFromResponse(resp *colly.Response) string {
-	if raw_article, err := readability.FromReader(bytes.NewReader(resp.Body), resp.Request.URL); err == nil {
-		return raw_article.TextContent
-	}
-	return ""
-}
+// func readBodyFromResponse(resp *colly.Response) string {
+// 	if raw_article, err := readability.FromReader(bytes.NewReader(resp.Body), resp.Request.URL); err == nil {
+// 		return raw_article.TextContent
+// 	}
+// 	return ""
+// }
 
-func readArticleFromResponse(resp *colly.Response) *WebArticle {
+func readArticleFromResponse(resp *colly.Response) *doc.Document {
 	if raw_article, err := readability.FromReader(bytes.NewReader(resp.Body), resp.Request.URL); err == nil {
-		return &WebArticle{
+		return &doc.Document{
 			URL:   resp.Request.URL.String(),
 			Title: raw_article.Title,
 			Body:  raw_article.TextContent,
@@ -214,10 +270,19 @@ func readArticleFromResponse(resp *colly.Response) *WebArticle {
 				}
 				return 0
 			}(),
-			Source: resp.Request.URL.Host,
+			LoadDate: time.Now().Unix(),
+			Source:   resp.Request.URL.Host,
 		}
 	}
 	return nil
+}
+
+func ToPrettyJsonString(data any) string {
+	val, err := json.MarshalIndent(data, "", "\t")
+	if err != nil {
+		return ""
+	}
+	return string(val)
 }
 
 // // adding a rule for each expr so that if the field is still empty it will assign a value
