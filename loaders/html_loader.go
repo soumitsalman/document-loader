@@ -11,7 +11,7 @@ import (
 	"github.com/go-shiori/go-readability"
 	"github.com/gocolly/colly/v2"
 	datautils "github.com/soumitsalman/data-utils"
-	doc "github.com/soumitsalman/web-collector/document"
+	doc "github.com/soumitsalman/document-loader/document"
 )
 
 // var (
