@@ -1,4 +1,4 @@
-module github.com/soumitsalman/web-collector
+module github.com/soumitsalman/document-loader
 
 go 1.21.6
 
