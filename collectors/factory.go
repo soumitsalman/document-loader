@@ -13,10 +13,6 @@ import (
 	datautils "github.com/soumitsalman/data-utils"
 )
 
-// const (
-// 	MAX_TIME_OUT = 15 * time.Second
-// )
-
 // var (
 // 	TITLE_EXPR   = []string{".ArticleHeader__title", ".entry-title", "#entry-title", "#article-title", ".article-title", "[itemprop='headline']", "[data-testid=storyTitle]", "h1", "title"}
 // 	BODY_EXPR    = []string{".article-content", "#article-content", ".article-container", "#article-container", "[itemprop=articleBody]", "#articlebody", ".c-entry-content", ".article-text", ".ArticleBody-articleBody", ".entry-content", "#entry-content", ".entry", "#entry", ".content", "#content", ".container", "article"}
@@ -29,7 +25,6 @@ const (
 	THE_HACKERSNEWS_SOURCE = "THE HACKERS NEWS"
 	YC_HACKERNEWS_SOURCE   = "YC HACKER NEWS"
 	MEDIUM_SOURCE          = "MEDIUM"
-	DEFAULT_SOURCE         = "DEFAULT WEB"
 )
 
 const (
