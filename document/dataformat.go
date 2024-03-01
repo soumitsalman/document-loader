@@ -8,6 +8,7 @@ import (
 )
 
 type Document struct {
+	Kind        string `json:"kind,omitempty"`
 	URL         string `json:"url,omitempty"`
 	Source      string `json:"source,omitempty"`
 	Title       string `json:"title,omitempty"`
@@ -20,7 +21,7 @@ type Document struct {
 	Likes       int    `json:"likes,omitempty"`
 }
 
-func (c *Document) ToString() string {
+func (c *Document) String() string {
 	// TODO: remove. temp for debugging
 	c.Body = datautils.TruncateTextWithEllipsis(c.Body, 150)
 	json_data, _ := json.MarshalIndent(c, "", "\t")

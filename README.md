@@ -33,7 +33,7 @@ func main() {
 		"https://blogs.scientificamerican.com/at-scientific-american/reception-on-capitol-hill-will-celebrate-scientific-americans-cities-issue/",
 	}
 
-	collector := loaders.NewDefaultLoader()
+	collector := loaders.NewDefaultWebTextLoader(&loaders.WebLoaderConfig{})()
 	for _, url := range urls {
 	 	collector.LoadDocument(url)
 	}
