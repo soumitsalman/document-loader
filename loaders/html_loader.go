@@ -24,7 +24,7 @@ import (
 // )
 
 const (
-	BODY_EXPR = ".article-content, #article-content, .article-container, #article-container, [itemprop=articleBody], #articlebody, .article-text, .entry-content, #entry-content, .content, #content, article, body"
+	BODY_EXPR = ".article-content, #article-content, .article-container, #article-container, [itemprop=articleBody], #articlebody, .article-text, .post, #post, .posts, #posts, .entry-content, #entry-content, .content, #content, article, body"
 )
 
 const (
@@ -43,7 +43,7 @@ const (
 )
 
 const (
-	_THE_HACKERSNEWS_SITE = "https://feeds.feedburner.com/TheHackersNews"
+	_THE_HACKERSNEWS_SITE = "https://thehackernews.com/news-sitemap.xml"
 	_YC_HACKERNEWS_SITE   = "https://hacker-news.firebaseio.com/v0/topstories.json"
 	_MEDIUM_SITE          = "https://medium.com/sitemap/sitemap.xml"
 )
@@ -89,6 +89,7 @@ func (c *WebLoader) LoadDocument(url string) *doc.Document {
 		article = &doc.Document{URL: url}
 		c.articles[url] = article
 		c.collector.Visit(url)
+		c.collector.Wait()
 	}
 	return article
 }
@@ -96,9 +97,8 @@ func (c *WebLoader) LoadDocument(url string) *doc.Document {
 // this function will load all the documents from a sitemap or rss feed
 func (c *WebLoader) LoadSite() []*doc.Document {
 	c.collector.Visit(c.config.Sitemap)
-	items := c.ListAll()
-	// c.articles = make(map[string]*doc.Document)
-	return items
+	c.collector.Wait()
+	return c.ListAll()
 }
 
 // // 	DIFFERENT LOADER FACTORIES		////
@@ -122,8 +122,8 @@ func internalNewLoader(config *WebLoaderConfig) *WebLoader {
 func NewDefaultWebTextLoader(config *WebLoaderConfig) *WebLoader {
 	web_collector := internalNewLoader(config)
 	web_collector.collector.OnHTML("html", func(h *colly.HTMLElement) {
-		if article := readArticleFromResponse(h.Response); article != nil {
-			web_collector.articles[article.URL] = article
+		if raw_article := readArticleFromResponse(h.Response); raw_article != nil {
+			web_collector.articles[raw_article.URL] = raw_article
 		}
 	})
 	return web_collector
@@ -146,24 +146,24 @@ func NewRedditLinkLoader() *WebLoader {
 }
 
 // Loads articles from https://feeds.feedburner.com/TheHackersNews that have been posted in the last N days
-func NewTheHackersNewsSiteLoader(days int) *WebLoader {
+func NewDefaultNewsSitemapLoader(days int, sitemap_url string) *WebLoader {
 	web_collector := internalNewLoader(&WebLoaderConfig{
-		Sitemap:           _THE_HACKERSNEWS_SITE,
+		Sitemap:           sitemap_url,
 		DisallowedFilters: []string{`(?i)\.(png|jpeg|jpg|gif|webp|mp4|avi|mkv|mp3|wav|pdf)$`},
 	})
 	web_collector.collector.AllowURLRevisit = true
 
 	// matching entry items in the initial sitemap
-	web_collector.collector.OnXML("//item", func(x *colly.XMLElement) {
-		link := x.ChildText("/link")
-		date, err := time.Parse("Mon, 02 Jan 2006 15:04:05 -0700", x.ChildText("/pubDate"))
-		if err == nil && withinDateRange(date, days) && !web_collector.inCache(link) {
+	web_collector.collector.OnXML("//url", func(x *colly.XMLElement) {
+		link := x.ChildText("/loc")
+		date := parseDate(x.ChildText("/news:news/news:publication_date"))
+		if withinDateRange(date, days) && !web_collector.inCache(link) {
 			web_collector.articles[link] = &doc.Document{
 				URL:         link,
-				Title:       x.ChildText("/title"),
-				Author:      x.ChildText("/author"),
 				PublishDate: date.Unix(),
-				Source:      THE_HACKERSNEWS_SOURCE,
+				Title:       x.ChildText("/news:news/news:title"),
+				Source:      x.ChildText("/news:news/news:publication/news:name"),
+				Category:    x.ChildText("/news:news/news:keywords"),
 				Kind:        ARTICLE,
 			}
 			// now collect the body
@@ -172,10 +172,9 @@ func NewTheHackersNewsSiteLoader(days int) *WebLoader {
 
 	})
 	// just match the whole HTML for links that are being visited
-	web_collector.collector.OnHTML(".post", func(h *colly.HTMLElement) {
+	web_collector.collector.OnHTML(BODY_EXPR, func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			new_article := readArticleFromResponse(h.Response)
-			article.Body = new_article.Body
+			article.Body += ("\n\n" + readBodyFromResponse(h.Response))
 		}
 	})
 
@@ -194,9 +193,9 @@ func NewMediumSiteLoader(days int) *WebLoader {
 	// this collects the overall site map of https://medium.com/sitemap/sitemap.xml
 	web_collector.collector.OnXML("//sitemap/loc", func(x *colly.XMLElement) {
 		link := x.Text
-		date, err := time.Parse("2006-01-02", date_regex.FindString(link))
+		date := parseDate(date_regex.FindString(link))
 		// no interest in anything other than posts
-		if err == nil && strings.Contains(link, "/posts/") && withinDateRange(date, days) {
+		if strings.Contains(link, "/posts/") && withinDateRange(date, days) {
 			// this collects the sitemap for the posts
 			x.Request.Visit(link)
 		}
@@ -205,9 +204,9 @@ func NewMediumSiteLoader(days int) *WebLoader {
 	// this is the sitemap for posts https://medium.com/sitemap/posts/2024/posts-2024-02-26.xml
 	web_collector.collector.OnXML("//url", func(x *colly.XMLElement) {
 		link := x.ChildText("/loc")
-		date, err := time.Parse("2006-01-02", x.ChildText("/lastmod"))
+		date := parseDate(x.ChildText("/lastmod"))
 
-		if err == nil && withinDateRange(date, days) && !web_collector.inCache(link) {
+		if withinDateRange(date, days) && !web_collector.inCache(link) {
 			web_collector.articles[link] = &doc.Document{
 				URL:         link,
 				PublishDate: date.Unix(),
@@ -223,9 +222,7 @@ func NewMediumSiteLoader(days int) *WebLoader {
 	web_collector.collector.OnHTML("html", func(h *colly.HTMLElement) {
 		// get or create because sometime's the URLs change benignly
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			new_article := readArticleFromResponse(h.Response)
-			article.Title = new_article.Title
-			article.Body = new_article.Body
+			article.Body = readBodyFromResponse(h.Response)
 		}
 	})
 
@@ -233,7 +230,7 @@ func NewMediumSiteLoader(days int) *WebLoader {
 }
 
 // loads story links from https://hacker-news.firebaseio.com/v0/topstories.json posted in the last N days
-func NewYCHackerNewsSiteLoader(days int) *WebLoader {
+func NewYCHackerNewsSiteLoader() *WebLoader {
 	// https://hacker-news.firebaseio.com/v0/topstories.json
 	web_collector := internalNewLoader(&WebLoaderConfig{
 		Sitemap:           _YC_HACKERNEWS_SITE,
@@ -287,8 +284,7 @@ func NewYCHackerNewsSiteLoader(days int) *WebLoader {
 
 	web_collector.collector.OnHTML(BODY_EXPR, func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			new_article := readArticleFromResponse(h.Response)
-			article.Body = new_article.Body
+			article.Body = readBodyFromResponse(h.Response)
 		}
 	})
 
@@ -299,6 +295,33 @@ func NewYCHackerNewsSiteLoader(days int) *WebLoader {
 func withinDateRange(date time.Time, range_days int) bool {
 	// 1 is being added to get past some unknown bug
 	return date.AddDate(0, 0, range_days+1).After(time.Now())
+}
+
+func parseDate(val string) time.Time {
+	// Layouts for parsing the time strings
+	layouts := []string{
+		time.ANSIC,
+		time.UnixDate,
+		time.RubyDate,
+		time.RFC822,
+		time.RFC822Z,
+		time.RFC850,
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC3339,
+		time.Stamp,
+		time.StampMilli,
+		time.DateTime,
+		time.DateOnly,
+	}
+
+	// Parse time strings with different layouts
+	for _, layout := range layouts {
+		if parsed_date, err := time.Parse(layout, val); err == nil {
+			return parsed_date
+		}
+	}
+	return time.Time{}
 }
 
 func readArticleFromResponse(resp *colly.Response) *doc.Document {
@@ -320,12 +343,12 @@ func readArticleFromResponse(resp *colly.Response) *doc.Document {
 	return nil
 }
 
-// func readBodyFromResponse(resp *colly.Response) string {
-// 	if raw_article, err := readability.FromReader(bytes.NewReader(resp.Body), resp.Request.URL); err == nil {
-// 		return raw_article.TextContent
-// 	}
-// 	return ""
-// }
+func readBodyFromResponse(resp *colly.Response) string {
+	if raw_article, err := readability.FromReader(bytes.NewReader(resp.Body), resp.Request.URL); err == nil {
+		return raw_article.TextContent
+	}
+	return ""
+}
 
 // func ToPrettyJsonString(data any) string {
 // 	val, err := json.MarshalIndent(data, "", "\t")
