@@ -24,7 +24,8 @@ import (
 // )
 
 const (
-	BODY_EXPR = ".article-content, #article-content, .article-container, #article-container, [itemprop=articleBody], #articlebody, .article-text, .post, #post, .posts, #posts, .entry-content, #entry-content, .content, #content, article, body"
+	BODY_EXPR       = ".article-content, #article-content, .article-container, #article-container, [itemprop=articleBody], #articlebody, .article-text, .post, #post, .posts, #posts, .entry-content, #entry-content, .content, #content, article, body"
+	BODY_EXPR_SHORT = ".post, .content, article, body"
 )
 
 const (
@@ -172,9 +173,9 @@ func NewDefaultNewsSitemapLoader(days int, sitemap_url string) *WebLoader {
 
 	})
 	// just match the whole HTML for links that are being visited
-	web_collector.collector.OnHTML(BODY_EXPR, func(h *colly.HTMLElement) {
+	web_collector.collector.OnHTML(BODY_EXPR_SHORT, func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			article.Body += ("\n\n" + readBodyFromResponse(h.Response))
+			article.Body = readBodyFromResponse(h.Response)
 		}
 	})
 
