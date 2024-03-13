@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -24,17 +25,16 @@ import (
 // )
 
 const (
+	_MAX_TIMEOUT = 10 * time.Second
+)
+
+const (
 	BODY_EXPR       = ".article-content, #article-content, .article-container, #article-container, [itemprop=articleBody], #articlebody, .article-text, .post, #post, .posts, #posts, .entry-content, #entry-content, .content, #content, article, body"
-	BODY_EXPR_SHORT = ".post, .content, article, body"
+	BODY_EXPR_SHORT = ".ArticleBase-Body, .post, .content, article, body"
 )
 
 const (
 	ARTICLE = "article"
-)
-
-const (
-	_CACHE_DIR    = "./.url-visit-cache"
-	_MAX_TIME_OUT = 15 * time.Second
 )
 
 const (
@@ -55,13 +55,14 @@ const (
 type WebLoader struct {
 	articles  map[string]*doc.Document
 	collector *colly.Collector
-	config    *WebLoaderConfig
+	Config    *WebLoaderConfig
 }
 
 type WebLoaderConfig struct {
 	Sitemap           string
 	DisallowedFilters []string
 	Timeout           time.Duration
+	LocalCache        string
 }
 
 func (c *WebLoader) inCache(url string) bool {
@@ -97,7 +98,7 @@ func (c *WebLoader) LoadDocument(url string) *doc.Document {
 
 // this function will load all the documents from a sitemap or rss feed
 func (c *WebLoader) LoadSite() []*doc.Document {
-	c.collector.Visit(c.config.Sitemap)
+	c.collector.Visit(c.Config.Sitemap)
 	c.collector.Wait()
 	return c.ListAll()
 }
@@ -106,16 +107,20 @@ func (c *WebLoader) LoadSite() []*doc.Document {
 // internal blank instance
 func internalNewLoader(config *WebLoaderConfig) *WebLoader {
 	col := colly.NewCollector(
-		colly.CacheDir(_CACHE_DIR),
 		colly.DisallowedURLFilters(datautils.Transform(config.DisallowedFilters, func(rule *string) *regexp.Regexp { return regexp.MustCompile(*rule) })...),
 	)
-	col.SetRequestTimeout(_MAX_TIME_OUT)
+	if config.LocalCache != "" {
+		colly.CacheDir(config.LocalCache)
+	}
+	if config.Timeout != 0 {
+		col.SetRequestTimeout(config.Timeout)
+	}
 	extensions.RandomUserAgent(col)
 
 	return &WebLoader{
 		articles:  make(map[string]*doc.Document),
 		collector: col,
-		config:    config,
+		Config:    config,
 	}
 }
 
@@ -150,22 +155,32 @@ func NewRedditLinkLoader() *WebLoader {
 func NewDefaultNewsSitemapLoader(days int, sitemap_url string) *WebLoader {
 	web_collector := internalNewLoader(&WebLoaderConfig{
 		Sitemap:           sitemap_url,
+		LocalCache:        os.Getenv("CACHE_DIR"),
+		Timeout:           _MAX_TIMEOUT,
 		DisallowedFilters: []string{`(?i)\.(png|jpeg|jpg|gif|webp|mp4|avi|mkv|mp3|wav|pdf)$`},
 	})
 	web_collector.collector.AllowURLRevisit = true
 
+	// web_collector.collector.OnResponse(func(r *colly.Response) {
+	// 	log.Println(string(r.Body))
+	// })
+
 	// matching entry items in the initial sitemap
 	web_collector.collector.OnXML("//url", func(x *colly.XMLElement) {
 		link := x.ChildText("/loc")
-		date := parseDate(x.ChildText("/news:news/news:publication_date"))
+		date := parseDate(x.ChildText("//news:publication_date"))
+
 		if withinDateRange(date, days) && !web_collector.inCache(link) {
 			web_collector.articles[link] = &doc.Document{
 				URL:         link,
 				PublishDate: date.Unix(),
-				Title:       x.ChildText("/news:news/news:title"),
-				Source:      x.ChildText("/news:news/news:publication/news:name"),
-				Category:    x.ChildText("/news:news/news:keywords"),
-				Kind:        ARTICLE,
+				Title:       x.ChildText("//news:title"),
+				Source:      x.ChildText("//news:name"),
+				Keywords: datautils.Filter(strings.Split(x.ChildText("//news:keywords"), ","), func(item *string) bool {
+					*item = strings.TrimSpace(*item)
+					return *item != ""
+				}),
+				Kind: ARTICLE,
 			}
 			// now collect the body
 			x.Request.Visit(link)
@@ -175,7 +190,7 @@ func NewDefaultNewsSitemapLoader(days int, sitemap_url string) *WebLoader {
 	// just match the whole HTML for links that are being visited
 	web_collector.collector.OnHTML(BODY_EXPR_SHORT, func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			article.Body = readBodyFromResponse(h.Response)
+			article.Text = readBodyFromResponse(h.Response)
 		}
 	})
 
@@ -223,7 +238,7 @@ func NewMediumSiteLoader(days int) *WebLoader {
 	web_collector.collector.OnHTML("html", func(h *colly.HTMLElement) {
 		// get or create because sometime's the URLs change benignly
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			article.Body = readBodyFromResponse(h.Response)
+			article.Text = readBodyFromResponse(h.Response)
 		}
 	})
 
@@ -242,7 +257,7 @@ func NewYCHackerNewsSiteLoader() *WebLoader {
 	web_collector.collector.OnResponse(func(r *colly.Response) {
 		url := r.Request.URL.String()
 		// visiting the topstories https://hacker-news.firebaseio.com/v0/topstories.json
-		if url == web_collector.config.Sitemap {
+		if url == web_collector.Config.Sitemap {
 			// [ 9129911, 9129199, 9127761, 9128141, 9128264, 9127792, 9129248, 9127092, 9128367, ..., 9038733 ]
 			var ids []int64
 			if json.Unmarshal(r.Body, &ids) == nil {
@@ -285,7 +300,7 @@ func NewYCHackerNewsSiteLoader() *WebLoader {
 
 	web_collector.collector.OnHTML(BODY_EXPR, func(h *colly.HTMLElement) {
 		if article := web_collector.Get(h.Request.URL.String()); article != nil {
-			article.Body = readBodyFromResponse(h.Response)
+			article.Text = readBodyFromResponse(h.Response)
 		}
 	})
 
@@ -330,7 +345,7 @@ func readArticleFromResponse(resp *colly.Response) *doc.Document {
 		return &doc.Document{
 			URL:   resp.Request.URL.String(),
 			Title: raw_article.Title,
-			Body:  raw_article.TextContent,
+			Text:  raw_article.TextContent,
 			PublishDate: func() int64 {
 				if raw_article.PublishedTime != nil {
 					return raw_article.PublishedTime.Unix()

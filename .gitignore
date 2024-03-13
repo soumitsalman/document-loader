@@ -1,3 +1,6 @@
-/.url-visit-cache
-/main.go
-/output.json
+.url-visit-cache
+output.json
+sitemaps.csv
+server.go
+beansackclient.go
+*.env
